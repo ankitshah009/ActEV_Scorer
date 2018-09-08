@@ -85,7 +85,7 @@ def yield_file_to_function(file_path, function):
 
 def write_records_as_csv(out_path, field_names, records, sep = "|"):
     def _write_recs(out_f):
-        for rec in [field_names] + sorted(records):
+        for rec in [field_names] + sorted(map(lambda v: map(str, v), records)):
             out_f.write("{}\n".format(sep.join(map(str, rec))))
 
     yield_file_to_function(out_path, _write_recs)
@@ -95,11 +95,6 @@ def serialize_as_json(out_path, out_object):
         out_f.write("{}\n".format(json.dumps(out_object, indent=2)))
 
     yield_file_to_function(out_path, _write_json)
-
-# Reducer function for generating an activity instance lookup dict
-def _activity_instance_reducer(init, a):
-    init.setdefault(a["activity"], []).append(ActivityInstance(a))
-    return init
 
 def load_system_output(log, system_output_file):
     log(1, "[Info] Loading system output file")
@@ -127,8 +122,26 @@ def load_schema_for_protocol(log, protocol):
 
     return load_json(schema_path)
 
-def parse_activities(deserialized_json):
-    return reduce(_activity_instance_reducer, deserialized_json["activities"], {})
+def parse_activities(deserialized_json, file_index, load_objects = False, ignore_extraneous = False):
+    activity_instances = [ ActivityInstance(a, load_objects) for a in deserialized_json.get("activities", []) ]
+
+    if ignore_extraneous:
+        extraneous_files = set(deserialized_json.get("filesProcessed", [])) - file_index.viewkeys()
+
+        def _r(init, a):
+            for f in extraneous_files & a.localization.viewkeys():
+                del a.localization[f]
+
+            # Throw out activity instances only localized to
+            # "extraneous" files
+            if len(a.localization) > 0:
+                init.append(a)
+
+            return init
+
+        return reduce(_r, activity_instances, [])
+    else:
+        return activity_instances
 
 def validate_input(log, system_output, system_output_schema):
     log(1, "[Info] Validating system output against JSON schema")
@@ -142,7 +155,7 @@ def validate_input(log, system_output, system_output_schema):
     return True
 
 # Check system "filesProcessed" vs file index
-def check_file_index_congruence(log, system_output, file_index):
+def check_file_index_congruence(log, system_output, file_index, ignore_extraneous = False):
     sys_files = set(system_output.get("filesProcessed", []))
     index_files = set(file_index.keys())
 
@@ -153,11 +166,16 @@ def check_file_index_congruence(log, system_output, file_index):
     for m in missing:
         log(0, "[Error] Missing file '{}' from system's \"filesProcessed\"".format(m))
 
-    for e in extraneous:
-        log(0, "[Error] Extraneous file '{}' in system's \"filesProcessed\"".format(e))
+    if ignore_extraneous:
+        if len(missing) > 0:
+            err_quit("System \"filesProcessed\" and file index are incongruent. Aborting!")
 
-    if len(missing) + len(extraneous) > 0:
-        err_quit("[Error] System \"filesProcessed\" and file index are incongruent. Aborting!")
+    else:
+        for e in extraneous:
+            log(0, "[Error] Extraneous file '{}' in system's \"filesProcessed\"".format(e))
+
+        if len(missing) + len(extraneous) > 0:
+            err_quit("System \"filesProcessed\" and file index are incongruent. Aborting!")
 
     return True
 
@@ -181,60 +199,16 @@ def write_out_scoring_params(output_dir, params):
     return out_file
 
 def score_actev18_ad(args):
-    verbosity_threshold = 1 if args.verbose else 0
-    log = build_logger(verbosity_threshold)
-
-    log(1, "[Info] Command: {}".format(" ".join(sys.argv)))
-
-    if not args.validation_only:
-        # Check for now-required arguments
-        if args.reference_file is None:
-            err_quit("Missing required REFERENCE_FILE argument (-r, --reference-file).  Aborting!")
-
-        if args.output_dir is None:
-            err_quit("Missing required OUTPUT_DIR argument (-o, --output-dir).  Aborting!")
-
     from actev18_ad import ActEV18_AD
-    protocol = ActEV18_AD
 
-    system_output = load_system_output(log, args.system_output_file)
-    activity_index = load_activity_index(log, args.activity_index)
-    file_index = load_file_index(log, args.file_index)
-    system_output_schema = load_schema_for_protocol(log, protocol)
-
-    validate_input(log, system_output, system_output_schema)
-    check_file_index_congruence(log, system_output, file_index)
-    log(1, "[Info] Validation successful")
-
-    if args.validation_only:
-        exit(0)
-
-    system_activities = parse_activities(system_output)
-    reference = load_reference(log, args.reference_file)
-    reference_activities = parse_activities(reference)
-
-    input_scoring_parameters = load_scoring_parameters(log, args.scoring_parameters_file) if args.scoring_parameters_file else {}
-    log(1, "[Info] Scoring ..")
-
-    scoring_parameters, alignment_records, activity_measure_records, pair_measure_records, aggregate_measure_records, det_point_records = protocol().score(input_scoring_parameters, system_activities, reference_activities, activity_index, file_index)
-
-    mkdir_p(args.output_dir)
-    log(1, "[Info] Saving results to directory '{}'".format(args.output_dir))
-
-    write_out_scoring_params(args.output_dir, scoring_parameters)
-
-    write_records_as_csv("{}/alignment.csv".format(args.output_dir), ["activity", "alignment", "ref", "sys", "sys_presenceconf_score", "kernel_similarity", "kernel_components"], dict_to_records(alignment_records))
-
-    write_records_as_csv("{}/pair_metrics.csv".format(args.output_dir), ["activity", "ref", "sys", "metric_name", "metric_value"], dict_to_records(pair_measure_records, lambda v: map(str, v)))
-
-    write_records_as_csv("{}/scores_by_activity.csv".format(args.output_dir), ["activity", "metric_name", "metric_value"], dict_to_records(activity_measure_records, lambda v: map(str, v)))
-
-    write_records_as_csv("{}/scores_aggregated.csv".format(args.output_dir), [ "metric_name", "metric_value" ], aggregate_measure_records)
-
-    if not args.disable_plotting:
-        plot_dets(log, args.output_dir, det_point_records)
+    score_basic(ActEV18_AD, args)
 
 def score_actev18_aod(args):
+    from actev18_aod import ActEV18_AOD
+
+    score_basic(ActEV18_AOD, args)
+
+def score_basic(protocol_class, args):
     verbosity_threshold = 1 if args.verbose else 0
     log = build_logger(verbosity_threshold)
 
@@ -248,52 +222,49 @@ def score_actev18_aod(args):
         if args.output_dir is None:
             err_quit("Missing required OUTPUT_DIR argument (-o, --output-dir).  Aborting!")
 
-    from actev18_aod import ActEV18_AOD
-    protocol = ActEV18_AOD
-
     system_output = load_system_output(log, args.system_output_file)
     activity_index = load_activity_index(log, args.activity_index)
     file_index = load_file_index(log, args.file_index)
+    input_scoring_parameters = load_scoring_parameters(log, args.scoring_parameters_file) if args.scoring_parameters_file else {}
+    protocol = protocol_class(input_scoring_parameters, file_index, activity_index)
     system_output_schema = load_schema_for_protocol(log, protocol)
 
     validate_input(log, system_output, system_output_schema)
-    check_file_index_congruence(log, system_output, file_index)
+    check_file_index_congruence(log, system_output, file_index, args.ignore_extraneous_files)
     log(1, "[Info] Validation successful")
 
     if args.validation_only:
         exit(0)
 
-    system_activities = parse_activities(system_output)
+    system_activities = parse_activities(system_output, file_index, protocol_class.requires_object_localization, args.ignore_extraneous_files)
     reference = load_reference(log, args.reference_file)
-    reference_activities = parse_activities(reference)
+    reference_activities = parse_activities(reference, file_index, protocol_class.requires_object_localization, args.ignore_extraneous_files)
 
-    input_scoring_parameters = load_scoring_parameters(log, args.scoring_parameters_file) if args.scoring_parameters_file else {}
     log(1, "[Info] Scoring ..")
-
-    scoring_parameters, alignment_records, activity_measure_records, pair_measure_records, aggregate_measure_records, det_point_records, object_frame_alignment_records = protocol().score(input_scoring_parameters, system_activities, reference_activities, activity_index, file_index)
+    alignment = protocol.compute_alignment(system_activities, reference_activities)
+    results = protocol.compute_results(alignment)
 
     mkdir_p(args.output_dir)
     log(1, "[Info] Saving results to directory '{}'".format(args.output_dir))
 
-    write_out_scoring_params(args.output_dir, scoring_parameters)
+    write_out_scoring_params(args.output_dir, protocol.scoring_parameters)
 
-    write_records_as_csv("{}/alignment.csv".format(args.output_dir), ["activity", "alignment", "ref", "sys", "sys_presenceconf_score", "kernel_similarity", "kernel_components"], dict_to_records(alignment_records))
+    write_records_as_csv("{}/alignment.csv".format(args.output_dir), ["activity", "alignment", "ref", "sys", "sys_presenceconf_score", "kernel_similarity", "kernel_components"], results.get("output_alignment_records", []))
 
-    write_records_as_csv("{}/pair_metrics.csv".format(args.output_dir), ["activity", "ref", "sys", "metric_name", "metric_value"], dict_to_records(pair_measure_records, lambda v: map(str, v)))
+    write_records_as_csv("{}/pair_metrics.csv".format(args.output_dir), ["activity", "ref", "sys", "metric_name", "metric_value"], results.get("pair_metrics", []))
 
-    write_records_as_csv("{}/scores_by_activity.csv".format(args.output_dir), ["activity", "metric_name", "metric_value"], dict_to_records(activity_measure_records, lambda v: map(str, v)))
+    write_records_as_csv("{}/scores_by_activity.csv".format(args.output_dir), ["activity", "metric_name", "metric_value"], results.get("scores_by_activity", []))
 
-    write_records_as_csv("{}/scores_aggregated.csv".format(args.output_dir), [ "metric_name", "metric_value" ], aggregate_measure_records)
+    write_records_as_csv("{}/scores_aggregated.csv".format(args.output_dir), [ "metric_name", "metric_value" ], results.get("scores_aggregated", []))
 
-    if args.dump_object_alignment_records:
-        write_records_as_csv("{}/object_alignment.csv".format(args.output_dir), ["activity", "ref_activity", "sys_activity", "frame", "ref_object_type", "sys_object_type", "mapped_ref_object_type", "mapped_sys_object_type", "alignment", "ref_object", "sys_object", "sys_presenceconf_score", "kernel_similarity", "kernel_components"], dict_to_records(object_frame_alignment_records))
+    if vars(args).get("dump_object_alignment_records", False):
+        write_records_as_csv("{}/object_alignment.csv".format(args.output_dir), ["activity", "ref_activity", "sys_activity", "frame", "ref_object_type", "sys_object_type", "mapped_ref_object_type", "mapped_sys_object_type", "alignment", "ref_object", "sys_object", "sys_presenceconf_score", "kernel_similarity", "kernel_components"], results.get("object_frame_alignment_records", []))
 
     if not args.disable_plotting:
-        plot_dets(log, args.output_dir, det_point_records)
-
+        plot_dets(log, args.output_dir, results.get("det_point_records", {}))
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Soring script for the NIST ActEV evaluation")
+    parser = argparse.ArgumentParser(description="Scoring script for the NIST ActEV evaluation")
 
     subparsers = parser.add_subparsers(help="Scoring protocols.  Include the '-h' argument after the selected protocol to see it's usage (e.g. ActEV18_AD -h)")
 
@@ -301,6 +272,7 @@ if __name__ == '__main__':
                  [["-r", "--reference-file"], dict(help="Reference JSON file", type=str)],
                  [["-a", "--activity-index"], dict(help="Activity index JSON file", type=str, required=True)],
                  [["-f", "--file-index"], dict(help="file index JSON file", type=str, required=True)],
+                 [["-F", "--ignore-extraneous-files"], dict(help="Ignore system detection localizations for files not included in the file index", action="store_true")],
                  [["-o", "--output-dir"], dict(help="Output directory for results", type=str)],
                  [["-d", "--disable-plotting"], dict(help="Disable DET Curve plotting of results", action="store_true")],
                  [["-v", "--verbose"], dict(help="Toggle verbose log output", action="store_true")],

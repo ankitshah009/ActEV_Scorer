@@ -1,6 +1,6 @@
 ActEV Scoring Software
-Version: 0.2.2
-Date: April 27, 2018
+Version: 0.3.3
+Date: June 25, 2018
 
 This software package contains a scoring script for the TRECVID
 Activities in Extended Video (ActEV) task.  The script
@@ -73,14 +73,19 @@ Option description:
   but not scored.  REFERENCE_FILE and OUTPUT_DIR parameters are not
   required if this option is enabled
 
+  -F - Optional; if enabled, ignores extraneous "filesProcessed" and
+  ignores system and reference instance localizations for extraneous
+  files.  Note that extraneous files in this sense are those not
+  included in the FILE_INDEX
+
 Protocols:
 
   ActEV18_AD - Scoring protocol for the ActEV 2018 Activity Detection
   task, the following measures are computed:
-    - PMiss at RFA for RFA values of 1, 0.2, 0.15, 0.1, 0.03, and
-      0.01
+    - PMiss at RFA for RFA values of 1, 0.2, 0.15, 0.1, 0.03, and 0.01
     - NMIDE (**NOTE** currently using a no-score collar size of 0
       frames, this will likely change in a future release)
+    - NMIDE at RFA for RFA values of 1, 0.2, 0.15, 0.1, 0.03, and 0.01
 
   ActEV18_AOD - Scoring protocol for the ActEV 2018 Activity and
   Object Detection task.  This protocol computes both the PMiss at RFA
@@ -213,6 +218,31 @@ Changelog:
       Specifically when there are no reference objects
     - Added "temporal_fa" and "temporal_miss" to the pair metrics
       output
+
+  May 16, 2018 - Version 0.3.0
+    - Renamed existing scoring parameters to be less ambiguous.  Added
+      scoring parameters to control error weights for some metrics as
+      well as the target rates of false alarm
+    - Refactored portions of the alignment and metric computation code
+      to improve performance
+
+  May 24, 2018 - Version 0.3.1
+    - Now reporting a PMiss@RFA of 1.0 instead of None when there are
+      no system reported instances
+    - For the "ActEV_AOD" protocol, now reporting a mean object
+      PMiss@RFA of 1.0 instead of None when there are no aligned
+      activity instances
+
+  June 13, 2018 - Version 0.3.2
+    - Added an option (-F, --ignore-extraneous-files) to ignore
+      "filesProcessed" and reference and system localizations for
+      files not included in the provided FILE_INDEX
+    - Miscellaneous improvements
+
+  June 25, 2018 - Version 0.3.3
+    - Added NMIDE at RFA measures for both "ActEV_AD" and "ActEV_AOD"
+      protocols
+    - Moved DET curve plot legend to the right of the plot
 
 Contact:
 
